@@ -14,7 +14,13 @@
         "etcd",
         "GitOps"
       ],
-      "links": [],
+      "links": [
+        {
+          "name": "Source",
+          "href": "https://github.com/vidit-11/3-node-k3s-cluster",
+          "icon": "github"
+        }
+      ],
       "architecture": {
         "groups": [
           {
