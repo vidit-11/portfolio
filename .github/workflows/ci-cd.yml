@@ -1,7 +1,5 @@
 name: CI/CD
 
-# PRs: checks → preview deploy (URL posted on the PR)
-# master: checks → production deploy → smoke test against the live site
 on:
   push:
     branches: [master]
@@ -9,7 +7,6 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# A newer push to the same PR cancels the old run; production deploys always finish
 concurrency:
   group: ci-cd-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -27,26 +24,22 @@ env:
 
 jobs:
   checks:
-    name: Lint, typecheck, build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
 
   preview:
-    name: Deploy preview
     needs: checks
-    # Fork PRs can't read secrets, so they only get the checks
+    # no secrets on fork PRs
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -58,46 +51,35 @@ jobs:
       url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - run: npm install -g vercel@${{ env.VERCEL_CLI_VERSION }}
+      - run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+      - run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+      - id: deploy
+        run: echo "url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})" >> "$GITHUB_OUTPUT"
 
-      - run: npm install --global vercel@${{ env.VERCEL_CLI_VERSION }}
-
-      - name: Pull preview settings and env vars from Vercel
-        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build
-        run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Deploy
-        id: deploy
-        run: |
-          url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Comment preview URL on the PR
+      - name: comment preview url
         uses: actions/github-script@v9
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}
         with:
           script: |
-            const marker = "<!-- vercel-preview -->";
-            const body = `${marker}\n**Preview:** ${process.env.PREVIEW_URL}\n\nCommit: ${context.payload.pull_request.head.sha.slice(0, 7)}`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const existing = comments.find((c) => c.body?.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            const tag = '<!-- vercel-preview -->'
+            const body = `${tag}\nPreview: ${process.env.PREVIEW_URL} (${context.payload.pull_request.head.sha.slice(0, 7)})`
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const old = comments.find(c => c.body?.includes(tag))
+            if (old) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body })
             } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
             }
 
   production:
-    name: Deploy production
     needs: checks
     if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -107,51 +89,34 @@ jobs:
       url: ${{ env.PRODUCTION_URL }}
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-
-      - run: npm install --global vercel@${{ env.VERCEL_CLI_VERSION }}
-
-      - name: Pull production settings and env vars from Vercel
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Deploy
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+      - run: npm install -g vercel@${{ env.VERCEL_CLI_VERSION }}
+      - run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+      - run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+      - run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
 
   smoke-test:
-    name: Smoke test production
     needs: production
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check key pages respond
+      - name: pages return 200
         run: |
           set -euo pipefail
           for path in / /projects /contact /resume.pdf /sitemap.xml /robots.txt; do
-            # Retry a few times in case the new deployment is still propagating
             code=$(curl -s -o /dev/null -w "%{http_code}" --retry 5 --retry-delay 5 --retry-all-errors "$PRODUCTION_URL$path")
             echo "$code $path"
-            if [ "$code" != "200" ]; then
-              echo "::error::$PRODUCTION_URL$path returned $code"
-              exit 1
-            fi
+            [ "$code" = "200" ] || exit 1
           done
 
-      - name: Check the home page renders real content
-        run: |
-          set -euo pipefail
-          html=$(curl -fsS "$PRODUCTION_URL/")
-          grep -q "Vidit" <<<"$html" || { echo "::error::Home page is missing expected content"; exit 1; }
-          echo "Home page OK"
+      - name: home page has content
+        run: curl -fsS "$PRODUCTION_URL/" | grep -q "Vidit"
 
-      - name: Check unknown pages return 404
+      - name: 404 works
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" "$PRODUCTION_URL/this-page-should-not-exist")
-          echo "$code /this-page-should-not-exist"
-          [ "$code" = "404" ] || { echo "::error::Expected 404, got $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w "%{http_code}" "$PRODUCTION_URL/does-not-exist")
+          echo "$code"
+          [ "$code" = "404" ]
