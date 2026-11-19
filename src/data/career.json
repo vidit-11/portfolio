@@ -10,7 +10,12 @@
           "description": [
             "Took the k3s and monitoring setup I built as an intern and rolled it out to more production servers and project environments.",
             "Handle infrastructure and deployments for Gujarat Government projects, which have strict uptime and performance requirements.",
-            "Built CI/CD pipelines for production that cut build, test and deploy time."
+            "Built CI/CD pipelines for production that cut build, test and deploy time.",
+            "Moved Staging and UAT application config from ConfigMaps and Secrets to Infisical, synced by its Kubernetes operator, with zero-downtime auto-reload when a value changes.",
+            "Security fix: moved Spring Actuator to an internal port after finding that the public gateway exposed the internal stack and service map.",
+            "Replaced TCP probes with Actuator startup, liveness and readiness probes, so pods with broken config never receive traffic.",
+            "Separated the Staging and UAT pipelines using reusable workflows, environment protections and CODEOWNERS on workflow files.",
+            "Automated GitHub Projects to track the full delivery lifecycle, from requirements to development to QA. Tasks marked Ready for QA get linked test cases automatically, with retest rounds and required rejection reasons. Bugs follow their own lifecycle and are reassigned between developer and QA, PR events update statuses, and closing all tasks closes the parent Story, Feature and Epic. Built re-runnable Excel imports that loaded test cases and the requirement hierarchy, a weekly Excel report emailed to the PM, and a workflow that rolls the setup out to every repository."
           ]
         },
         {
